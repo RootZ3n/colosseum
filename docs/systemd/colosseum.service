@@ -1,0 +1,42 @@
+[Unit]
+Description=Colosseum — Agent Proving Ground (HTTP API + bundled UI)
+Documentation=https://github.com/RootZ3n/colosseum
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Example values for a public install. Replace these before installing:
+#   User/Group: a local service account that owns COLOSSEUM_STATE_ROOT
+#   WorkingDirectory: the checked-out Colosseum repo or installed package dir
+#   COLOSSEUM_STATE_ROOT/ReadWritePaths: a dedicated state directory
+User=colosseum
+Group=colosseum
+WorkingDirectory=/opt/colosseum
+ExecStartPre=/bin/bash -lc 'test -f dist/api/server.js || /usr/bin/npm run build'
+ExecStart=/usr/bin/npm run start
+Restart=on-failure
+RestartSec=3
+
+# Bind locally by default. Set COLOSSEUM_HOST=0.0.0.0 to expose on the LAN
+# (and front it with a real reverse proxy if you do).
+Environment=COLOSSEUM_PORT=18799
+Environment=COLOSSEUM_HOST=127.0.0.1
+Environment=COLOSSEUM_STATE_ROOT=/var/lib/colosseum
+Environment=NODE_ENV=production
+
+# Conservative hardening — Colosseum only needs read on its repo and
+# read/write on its state directory. Adjust if you point STATE_ROOT
+# elsewhere.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/var/lib/colosseum
+
+# Logs go to journald — `journalctl -u colosseum -f` to tail.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
