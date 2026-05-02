@@ -14,6 +14,9 @@ All notable changes to Colosseum will be documented in this file.
 - Added BetterClaw as a testable CLI adapter.
 - Added Squidley as a public HTTP adapter for the local `/api/chat` route.
 - Added Squidley-v2 as a lab-only HTTP adapter for the local `/chat` route.
+- Added live TrialEvent streaming from runner to API/UI, including SSE replay
+  for completed trials and Arena Floor LIVE/BUFFERED indicators.
+- Added `--watch` / `--live` CLI output for trial lifecycle events.
 - Hid Ptah and Squidley-v2 from the public UI/CLI list unless
   `COLOSSEUM_LAB_ADAPTERS` explicitly enables them.
 - Fixed OpenClaw adapter dispatch to use the real `agent --local --message`

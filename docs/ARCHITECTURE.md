@@ -64,9 +64,16 @@ product — to understand the system in one sitting.
 4. **Scoring.aggregate** rolls all per-test results into a weighted trust score.
 5. **TrialStore** writes the summary to `colosseum-state/trials/<trialId>.json`.
 
-The runner emits a typed `TrialEvent` stream (`trial:start`, `test:start`,
-`agent:event`, `test:end`, `trial:end`) which the API forwards to the UI as SSE
-for the live "Arena Floor" timeline.
+The runner emits a typed `TrialEvent` stream with structured phases such as
+`starting`, `test_started`, `adapter_event`, `receipt_written`, `scoring`, and
+`complete`. Adapter `streamEvents()` is consumed concurrently with
+`sendPrompt()` when the adapter supports it. Otherwise the stream is marked
+`buffered` and contains only real runner lifecycle events plus post-hoc adapter
+events from `AgentRunResult.events`.
+
+The API forwards live events as SSE at `GET /api/trials/:trialId/events`.
+Completed trials replay from `colosseum-state/trial-events/<trialId>.json`, so
+refreshing the UI does not lose the Arena Floor timeline.
 
 ## State layout
 
@@ -74,6 +81,8 @@ for the live "Arena Floor" timeline.
 colosseum-state/
 ├── trials/
 │   └── <trialId>.json                # one TrialSummary per trial
+├── trial-events/
+│   └── <trialId>.json                # redacted live/replay TrialEvent timeline
 ├── receipts/
 │   └── <trialId>/
 │       ├── <testId>.json             # full machine-readable receipt

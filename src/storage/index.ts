@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { Verdict } from "../types.js";
+import type { TrialEvent, Verdict } from "../types.js";
 import type { TrialScore } from "../scoring/score.js";
 import type { AdapterTruthContract } from "../adapters/types.js";
 
@@ -9,6 +9,7 @@ import type { AdapterTruthContract } from "../adapters/types.js";
  *
  *   colosseum-state/
  *     trials/<trialId>.json
+ *     trial-events/<trialId>.json
  *     receipts/<trialId>/<testId>.json
  *     receipts/<trialId>/<testId>.md
  *     fixtures/<trialId>/<testId>-<rand>/...     (per-test workspaces)
@@ -48,6 +49,8 @@ export interface TrialSummary {
   packVersions: Record<string, string>;
   /** Adapter truth contract — copied onto the trial for audit. */
   adapterTruth: AdapterTruthContract;
+  liveMode?: "live" | "buffered" | "replay";
+  eventCount?: number;
 }
 
 export class TrialStore {
@@ -61,6 +64,7 @@ export class TrialStore {
       "fixtures",
       "agents",
       "reports",
+      "trial-events",
     ]) {
       await fs.mkdir(path.join(this.stateRoot, sub), { recursive: true });
     }
@@ -98,6 +102,25 @@ export class TrialStore {
       return JSON.parse(txt);
     } catch {
       return null;
+    }
+  }
+
+  async saveTrialEvents(trialId: string, events: TrialEvent[]): Promise<string> {
+    await this.ensureLayout();
+    const file = path.join(this.stateRoot, "trial-events", `${trialId}.json`);
+    await fs.writeFile(file, JSON.stringify(events, null, 2));
+    return file;
+  }
+
+  async getTrialEvents(trialId: string): Promise<TrialEvent[]> {
+    const file = path.join(this.stateRoot, "trial-events", `${trialId}.json`);
+    const txt = await fs.readFile(file, "utf8").catch(() => "");
+    if (!txt) return [];
+    try {
+      const parsed = JSON.parse(txt);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
     }
   }
 }

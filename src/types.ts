@@ -39,6 +39,46 @@ export interface AgentEvent {
   data?: Record<string, unknown>;
 }
 
+export type TrialEventPhase =
+  | "queued"
+  | "starting"
+  | "adapter_event"
+  | "test_started"
+  | "test_passed"
+  | "test_failed"
+  | "warning"
+  | "guard_blocked"
+  | "scoring"
+  | "receipt_written"
+  | "complete";
+
+export type TrialEventSeverity = "info" | "pass" | "warn" | "fail" | "critical";
+
+export interface TrialEvent {
+  sequence: number;
+  trialId: string;
+  packId?: string;
+  testId?: string;
+  timestamp: number;
+  phase: TrialEventPhase;
+  severity: TrialEventSeverity;
+  message: string;
+  evidence?: {
+    receiptId?: string;
+    receiptPath?: string;
+    artifactPath?: string;
+    detail?: string;
+  };
+  adapter?: {
+    id: string;
+    version?: string;
+  };
+  model?: ModelInfo;
+  source: "runner" | "adapter" | "velum" | "scoring" | "receipt";
+  mode?: "live" | "buffered" | "replay";
+  rawKind?: string;
+}
+
 export interface AgentArtifact {
   /** Path relative to the workspace. */
   path: string;

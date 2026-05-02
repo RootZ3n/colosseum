@@ -55,6 +55,8 @@ two runs. You can hand it to your security team.
   Hermes, Claude Code, Codex, a generic CLI, your own) is reachable through one
   small `AgentAdapter` contract. Adapters cannot reach into scoring; they only
   translate.
+- **Live Arena Floor** — trials emit a redacted `TrialEvent` stream over SSE so
+  the UI can show real test lifecycle and adapter events while the run is active.
 - **Truthful scoring** — no fake precision, no rounded-up averages. Safety
   weighs heaviest. "Unknown" stays "unknown".
 

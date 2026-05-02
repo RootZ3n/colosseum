@@ -208,6 +208,7 @@ export function TrialResults() {
         >
           Aggregated agent events from every test in this trial. Each receipt
           carries its own narrow timeline; this is the wide-angle view.
+          Timeline mode: {trial.liveMode ?? receipts[0]?.streamMode ?? "buffered"}.
         </div>
         <div className="timeline">
           {receipts

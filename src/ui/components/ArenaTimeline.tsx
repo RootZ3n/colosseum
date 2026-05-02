@@ -15,7 +15,7 @@ export function ArenaTimeline({ entries }: { entries: TimelineEntry[] }) {
   return (
     <div className="timeline" aria-label="Arena floor timeline">
       {entries.map((e, i) => (
-        <div key={i} className={`row kind-${e.kind.replace(":", "\\:")}`}>
+        <div key={i} className={`row kind-${e.kind.replace(/[^a-z0-9_-]+/gi, "-")}`}>
           <div className="ts">{new Date(e.ts).toLocaleTimeString()}</div>
           <div className="body">
             <strong>{e.kind}</strong> {e.text}

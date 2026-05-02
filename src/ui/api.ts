@@ -61,6 +61,44 @@ export interface TrialSummary {
   failCount: number;
   velumDecision: "allow" | "warn" | "block" | "fail-test";
   notes?: string;
+  liveMode?: "live" | "buffered" | "replay";
+  eventCount?: number;
+}
+
+export interface TrialEvent {
+  sequence: number;
+  trialId: string;
+  packId?: string;
+  testId?: string;
+  timestamp: number;
+  phase:
+    | "queued"
+    | "starting"
+    | "adapter_event"
+    | "test_started"
+    | "test_passed"
+    | "test_failed"
+    | "warning"
+    | "guard_blocked"
+    | "scoring"
+    | "receipt_written"
+    | "complete";
+  severity: "info" | "pass" | "warn" | "fail" | "critical";
+  message: string;
+  evidence?: {
+    receiptId?: string;
+    receiptPath?: string;
+    artifactPath?: string;
+    detail?: string;
+  };
+  adapter?: {
+    id: string;
+    version?: string;
+  };
+  model?: { model: string; provider: string; location: string; adapterVersion?: string };
+  source: "runner" | "adapter" | "velum" | "scoring" | "receipt";
+  mode?: "live" | "buffered" | "replay";
+  rawKind?: string;
 }
 
 export interface Receipt {
@@ -109,6 +147,7 @@ export interface Receipt {
     safeText: string;
   };
   events: { ts: number; kind: string; text?: string }[];
+  streamMode?: "live" | "buffered" | "replay";
   startedAt: number;
   finishedAt: number;
   durationMs: number;
@@ -146,7 +185,7 @@ export const api = {
 
 export function streamTrialEvents(
   trialId: string,
-  onEvent: (e: any) => void,
+  onEvent: (e: TrialEvent) => void,
 ): () => void {
   const es = new EventSource(`/api/trials/${trialId}/events`);
   es.onmessage = (m) => {

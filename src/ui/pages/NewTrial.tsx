@@ -5,6 +5,7 @@ import {
   streamTrialEvents,
   type AgentSummary,
   type PackSummary,
+  type TrialEvent,
 } from "../api.js";
 import { ArenaTimeline, type TimelineEntry } from "../components/ArenaTimeline.js";
 import { ArenaRails, SectionDivider } from "../components/ArenaRails.js";
@@ -27,6 +28,9 @@ export function NewTrial() {
   const [running, setRunning] = useState(false);
   const [trialId, setTrialId] = useState<string | null>(null);
   const [events, setEvents] = useState<TimelineEntry[]>([]);
+  const [liveEvents, setLiveEvents] = useState<TrialEvent[]>([]);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
     api.agents().then(setAgents);
@@ -37,6 +41,12 @@ export function NewTrial() {
       setSelectedPacks(p.some((x) => x.id === "stamina") ? ["stamina"] : p.map((x) => x.id));
     });
   }, []);
+
+  useEffect(() => {
+    if (!running) return;
+    const id = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(id);
+  }, [running]);
 
   const selectedAgent = useMemo(
     () => agents.find((a) => a.id === agent),
@@ -59,11 +69,21 @@ export function NewTrial() {
 
   const honestUnknown =
     truth.modelIdentity === "unknown" || truth.costTruth === "unknown";
+  const latest = liveEvents[liveEvents.length - 1];
+  const latestCritical = [...liveEvents].reverse().find((e) => e.severity === "critical");
+  const currentTest = [...liveEvents].reverse().find((e) => e.testId)?.testId;
+  const currentPack = [...liveEvents].reverse().find((e) => e.packId)?.packId;
+  const currentModel = [...liveEvents].reverse().find((e) => e.model)?.model;
+  const streamMode =
+    latest?.mode ?? (selectedAgent?.capabilities?.streaming ? "live" : "buffered");
+  const elapsedMs = startedAt ? now - startedAt : 0;
 
   async function start() {
     setRunning(true);
     setEvents([]);
+    setLiveEvents([]);
     setTrialId(null);
+    setStartedAt(Date.now());
     try {
       const { trialId } = await api.startTrial({
         agent,
@@ -73,12 +93,15 @@ export function NewTrial() {
       });
       setTrialId(trialId);
       const stop = streamTrialEvents(trialId, (e) => {
-        const text = format(e);
-        setEvents((prev) => [...prev, { ts: Date.now(), kind: e.kind, text }]);
-        if (e.kind === "trial:end") {
+        setLiveEvents((prev) => [...prev.slice(-199), e]);
+        setEvents((prev) => [
+          ...prev.slice(-199),
+          { ts: e.timestamp, kind: `${e.phase}.${e.severity}`, text: e.message },
+        ]);
+        if (e.phase === "complete") {
           stop();
           setRunning(false);
-          setTimeout(() => nav(`/trial/${trialId}`), 600);
+          setTimeout(() => nav(`/trial/${trialId}`), 900);
         }
       });
     } catch (err) {
@@ -266,7 +289,57 @@ export function NewTrial() {
         </div>
 
         <div className="stone" style={{ gridColumn: "span 2" }}>
-          <h2 style={{ marginTop: 0 }}>Arena Floor</h2>
+          <div className="arena-live-head">
+            <div>
+              <div className="eyebrow">Arena Floor</div>
+              <h2 style={{ margin: 0 }}>Live Trial</h2>
+            </div>
+            <span className={`live-badge ${streamMode}`}>
+              {streamMode === "live" ? "LIVE" : streamMode === "replay" ? "REPLAY" : "BUFFERED"}
+            </span>
+          </div>
+          {latestCritical && (
+            <div className="critical-banner">{latestCritical.message}</div>
+          )}
+          <div className="live-grid">
+            <div>
+              <span>Phase</span>
+              <strong>{latest?.phase.replace(/_/g, " ") ?? (running ? "queued" : "idle")}</strong>
+            </div>
+            <div>
+              <span>Current test</span>
+              <strong>{currentTest ?? "pending"}</strong>
+            </div>
+            <div>
+              <span>Pack</span>
+              <strong>{currentPack ?? (selectedPacks.join(", ") || "pending")}</strong>
+            </div>
+            <div>
+              <span>Adapter</span>
+              <strong>{selectedAgent?.id ?? agent}</strong>
+            </div>
+            <div>
+              <span>Provider/model</span>
+              <strong>
+                {currentModel
+                  ? `${currentModel.provider} · ${currentModel.model}`
+                  : "pending identity"}
+              </strong>
+            </div>
+            <div>
+              <span>Elapsed</span>
+              <strong>{running ? `${(elapsedMs / 1000).toFixed(1)}s` : "0.0s"}</strong>
+            </div>
+            <div>
+              <span>Trust</span>
+              <strong>{latest?.phase === "complete" ? "scored" : "pending scoring"}</strong>
+            </div>
+          </div>
+          {streamMode === "buffered" && (
+            <div className="adapter-truth-note" style={{ margin: "10px 0" }}>
+              This adapter does not provide live step events; showing trial status and receipt timeline.
+            </div>
+          )}
           {trialId && (
             <div className="muted mono" style={{ marginBottom: 8 }}>
               Trial: {trialId}
@@ -277,21 +350,4 @@ export function NewTrial() {
       </div>
     </div>
   );
-}
-
-function format(e: any): string {
-  switch (e.kind) {
-    case "trial:start":
-      return `agent=${e.agentId}, packs=${e.packs.join(",")}`;
-    case "test:start":
-      return `${e.testId} (${e.pack})`;
-    case "agent:event":
-      return `${e.testId}: ${e.event.kind}${e.event.text ? " — " + e.event.text.slice(0, 200) : ""}`;
-    case "test:end":
-      return `${e.testId} → ${e.verdict}${e.reasons[0] ? " — " + e.reasons[0] : ""}`;
-    case "trial:end":
-      return `verdict=${e.summary.verdict} trust=${Math.round(e.summary.score.trust * 100)}%`;
-    default:
-      return JSON.stringify(e);
-  }
 }

@@ -13,6 +13,9 @@ import type {
   AgentEvent,
   CostInfo,
   ModelLocation,
+  ModelInfo,
+  TrialEvent,
+  TrialEventSeverity,
   Verdict,
 } from "../types.js";
 import { collectArtifacts } from "./artifact-collector.js";
@@ -62,12 +65,7 @@ export interface TrialOptions {
   onEvent?: (e: TrialEvent) => void;
 }
 
-export type TrialEvent =
-  | { kind: "trial:start"; trialId: string; agentId: string; packs: string[] }
-  | { kind: "test:start"; testId: string; pack: string }
-  | { kind: "agent:event"; testId: string; event: AgentEvent }
-  | { kind: "test:end"; testId: string; verdict: Verdict; reasons: string[] }
-  | { kind: "trial:end"; trialId: string; summary: TrialSummary };
+export type { TrialEvent } from "../types.js";
 
 export async function runTrial(opts: TrialOptions): Promise<TrialSummary> {
   const trialId = opts.trialId ?? `trial-${nanoid(10)}`;
@@ -76,7 +74,23 @@ export async function runTrial(opts: TrialOptions): Promise<TrialSummary> {
   const fixtures = new FixtureManager(opts.stateRoot);
   await trialStore.ensureLayout();
   const startedAt = Date.now();
-  const emit = opts.onEvent ?? (() => {});
+  const timeline: TrialEvent[] = [];
+  let sequence = 0;
+  let liveMode: "live" | "buffered" = opts.adapter.capabilities.streaming ? "live" : "buffered";
+  const emit = (event: Omit<TrialEvent, "sequence" | "trialId" | "timestamp"> & {
+    timestamp?: number;
+  }) => {
+    const safe: TrialEvent = {
+      sequence: ++sequence,
+      trialId,
+      timestamp: event.timestamp ?? Date.now(),
+      ...event,
+      message: redact(event.message).redacted,
+    };
+    timeline.push(safe);
+    if (timeline.length > 1_000) timeline.splice(0, timeline.length - 1_000);
+    opts.onEvent?.(safe);
+  };
 
   const allResults: TestResult[] = [];
   const byCategory: Record<TestCategory, TestResult[]> = {
@@ -100,11 +114,25 @@ export async function runTrial(opts: TrialOptions): Promise<TrialSummary> {
   for (const p of opts.packs) for (const t of p.tests) packForTest[t.id] = p;
 
   emit({
-    kind: "trial:start",
-    trialId,
-    agentId: opts.adapter.id,
-    packs: packIds,
+    phase: "starting",
+    severity: "info",
+    message: `Trial starting with ${opts.adapter.id} across ${packIds.join(", ")}`,
+    adapter: { id: opts.adapter.id, version: opts.adapter.version },
+    source: "runner",
+    mode: liveMode,
   });
+  if (!opts.adapter.capabilities.streaming || !opts.adapter.streamEvents) {
+    liveMode = "buffered";
+    emit({
+      phase: "warning",
+      severity: "warn",
+      message:
+        "This adapter does not provide live step events; showing trial status and receipt timeline.",
+      adapter: { id: opts.adapter.id, version: opts.adapter.version },
+      source: "runner",
+      mode: "buffered",
+    });
+  }
 
   // ── Preflight ──────────────────────────────────────────────────
   // Run the adapter's health check BEFORE any test. If it fails, the
@@ -121,9 +149,15 @@ export async function runTrial(opts: TrialOptions): Promise<TrialSummary> {
       health.reason ??
       "Adapter health check failed without a reason (treat as setup failure).";
     emit({
-      kind: "agent:event",
-      testId: "preflight",
-      event: { ts: Date.now(), kind: "setup:failed", text: reason },
+      phase: "warning",
+      severity: "critical",
+      testId: "preflight.adapter-health",
+      packId: "preflight",
+      message: reason,
+      adapter: { id: opts.adapter.id, version: opts.adapter.version },
+      source: "runner",
+      mode: liveMode,
+      rawKind: "setup:failed",
     });
 
     const preflightResult: TestResult = {
@@ -171,6 +205,7 @@ export async function runTrial(opts: TrialOptions): Promise<TrialSummary> {
       },
       costInfo: { reported: false, note: "preflight failure — agent never ran" },
       events: [],
+      streamMode: liveMode,
       artifacts: [],
       stdout: "",
       stderr: "",
@@ -183,10 +218,15 @@ export async function runTrial(opts: TrialOptions): Promise<TrialSummary> {
     await receiptStore.save(preflightReceipt);
 
     emit({
-      kind: "test:end",
+      phase: "receipt_written",
+      severity: "critical",
       testId: "preflight.adapter-health",
-      verdict: "error",
-      reasons: preflightResult.reasons,
+      packId: "preflight",
+      message: "Preflight setup receipt written",
+      evidence: { receiptId: preflightReceipt.receiptId },
+      adapter: { id: opts.adapter.id, version: opts.adapter.version },
+      source: "receipt",
+      mode: liveMode,
     });
 
     const finishedAt = Date.now();
@@ -210,15 +250,35 @@ export async function runTrial(opts: TrialOptions): Promise<TrialSummary> {
       adapterVersion: opts.adapter.version,
       packVersions,
       adapterTruth: opts.adapter.truth,
+      liveMode,
     };
     await trialStore.saveTrial(summary);
-    emit({ kind: "trial:end", trialId, summary });
+    emit({
+      phase: "complete",
+      severity: "critical",
+      message: `Trial complete: ERROR`,
+      adapter: { id: opts.adapter.id, version: opts.adapter.version },
+      source: "runner",
+      mode: liveMode,
+    });
+    summary.eventCount = timeline.length;
+    await trialStore.saveTrial(summary);
+    await trialStore.saveTrialEvents(trialId, timeline);
     return summary;
   }
 
   for (const pack of opts.packs) {
     for (const test of pack.tests) {
-      emit({ kind: "test:start", testId: test.id, pack: pack.id });
+      emit({
+        phase: "test_started",
+        severity: "info",
+        testId: test.id,
+        packId: pack.id,
+        message: `${test.id} started`,
+        adapter: { id: opts.adapter.id, version: opts.adapter.version },
+        source: "runner",
+        mode: liveMode,
+      });
       const tStart = Date.now();
       const workspace = await fixtures.createWorkspace(trialId, test.id);
       // Hold the session reference outside the try so the finally can call
@@ -246,13 +306,63 @@ export async function runTrial(opts: TrialOptions): Promise<TrialSummary> {
           timeoutMs: opts.baseRunOptions?.timeoutMs,
           extra: opts.baseRunOptions?.extra,
         });
+        emit({
+          phase: "adapter_event",
+          severity: "info",
+          testId: test.id,
+          packId: pack.id,
+          message: `Adapter session ${session.sessionId} started`,
+          adapter: { id: opts.adapter.id, version: opts.adapter.version },
+          model: session.modelInfo,
+          source: "runner",
+          mode: liveMode,
+          rawKind: "session:start",
+        });
 
         const promptRaw = await test.prompt(ctx);
         const promptScan = scan(promptRaw, { source: "prompt" });
 
+        const streamed = new Set<string>();
+        const stopPump = startAdapterEventPump({
+          adapter: opts.adapter,
+          session,
+          testId: test.id,
+          packId: pack.id,
+          mode: liveMode,
+          emit: (ev) => {
+            streamed.add(agentEventKey(ev));
+            emit({
+              phase: "adapter_event",
+              severity: severityForAgentEvent(ev),
+              testId: test.id,
+              packId: pack.id,
+              message: formatAgentEvent(ev),
+              adapter: { id: opts.adapter.id, version: opts.adapter.version },
+              model: session?.modelInfo,
+              source: "adapter",
+              mode: liveMode,
+              rawKind: ev.kind,
+              timestamp: ev.ts,
+            });
+          },
+        });
         const run = await opts.adapter.sendPrompt(session, promptRaw);
+        await stopPump();
         for (const ev of run.events) {
-          emit({ kind: "agent:event", testId: test.id, event: ev });
+          if (streamed.has(agentEventKey(ev))) continue;
+          emit({
+            phase: "adapter_event",
+            severity: severityForAgentEvent(ev),
+            testId: test.id,
+            packId: pack.id,
+            message: formatAgentEvent(ev),
+            adapter: { id: opts.adapter.id, version: opts.adapter.version },
+            model: run.modelInfo,
+            source: "adapter",
+            mode: "buffered",
+            rawKind: ev.kind,
+            timestamp: ev.ts,
+          });
         }
 
         // Merge artifacts from the adapter (its own view) with a workspace
@@ -339,6 +449,7 @@ export async function runTrial(opts: TrialOptions): Promise<TrialSummary> {
           modelInfo: run.modelInfo,
           costInfo: run.costInfo,
           events: run.events,
+          streamMode: liveMode,
           artifacts: finalArtifacts,
           stdout: safeStdout,
           stderr: safeStderr,
@@ -354,10 +465,28 @@ export async function runTrial(opts: TrialOptions): Promise<TrialSummary> {
         finishedTestVerdicts.set(test.id, result.verdict);
 
         emit({
-          kind: "test:end",
+          phase: "receipt_written",
+          severity: severityForVerdict(result.verdict),
           testId: test.id,
-          verdict: result.verdict,
-          reasons: result.reasons,
+          packId: pack.id,
+          message: `Receipt written for ${test.id}`,
+          evidence: { receiptId: receipt.receiptId },
+          adapter: { id: opts.adapter.id, version: opts.adapter.version },
+          model: run.modelInfo,
+          source: "receipt",
+          mode: liveMode,
+        });
+        emit({
+          phase: verdictPhase(result.verdict),
+          severity: severityForVerdict(result.verdict),
+          testId: test.id,
+          packId: pack.id,
+          message: `${test.id} ${result.verdict.toUpperCase()}${result.reasons[0] ? ` — ${result.reasons[0]}` : ""}`,
+          evidence: { receiptId: receipt.receiptId },
+          adapter: { id: opts.adapter.id, version: opts.adapter.version },
+          model: run.modelInfo,
+          source: "runner",
+          mode: liveMode,
         });
       } catch (err) {
         const errResult: TestResult = {
@@ -411,6 +540,7 @@ export async function runTrial(opts: TrialOptions): Promise<TrialSummary> {
               note: "test errored — incomplete execution",
             },
             events: [],
+            streamMode: liveMode,
             artifacts: [],
             stdout: "",
             stderr: redact(errStack).redacted,
@@ -429,21 +559,27 @@ export async function runTrial(opts: TrialOptions): Promise<TrialSummary> {
           // up in the timeline; we do NOT throw, because the test outcome
           // above is already the source of truth.
           emit({
-            kind: "agent:event",
+            phase: "warning",
+            severity: "critical",
             testId: test.id,
-            event: {
-              ts: Date.now(),
-              kind: "error",
-              text: `failed to save error-path receipt: ${(receiptErr as Error).message}`,
-            },
+            packId: pack.id,
+            message: `failed to save error-path receipt: ${(receiptErr as Error).message}`,
+            adapter: { id: opts.adapter.id, version: opts.adapter.version },
+            source: "receipt",
+            mode: liveMode,
+            rawKind: "error",
           });
         }
 
         emit({
-          kind: "test:end",
+          phase: "test_failed",
+          severity: "critical",
           testId: test.id,
-          verdict: "error",
-          reasons: errResult.reasons,
+          packId: pack.id,
+          message: `${test.id} ERROR — ${errResult.reasons[0]}`,
+          adapter: { id: opts.adapter.id, version: opts.adapter.version },
+          source: "runner",
+          mode: liveMode,
         });
       } finally {
         // Always call stop() if a session was started — adapters often hold
@@ -457,13 +593,15 @@ export async function runTrial(opts: TrialOptions): Promise<TrialSummary> {
             // Surface as an event so it shows up on the timeline; don't
             // throw — the test verdict above is the source of truth.
             emit({
-              kind: "agent:event",
+              phase: "warning",
+              severity: "warn",
               testId: test.id,
-              event: {
-                ts: Date.now(),
-                kind: "error",
-                text: `adapter.stop threw: ${(stopErr as Error).message}`,
-              },
+              packId: pack.id,
+              message: `adapter.stop threw: ${(stopErr as Error).message}`,
+              adapter: { id: opts.adapter.id, version: opts.adapter.version },
+              source: "adapter",
+              mode: liveMode,
+              rawKind: "error",
             });
           }
         }
@@ -471,6 +609,14 @@ export async function runTrial(opts: TrialOptions): Promise<TrialSummary> {
     }
   }
 
+  emit({
+    phase: "scoring",
+    severity: "info",
+    message: "Scoring trial",
+    adapter: { id: opts.adapter.id, version: opts.adapter.version },
+    source: "scoring",
+    mode: liveMode,
+  });
   const score = aggregate({ byCategory, costs });
   const verdict = overallVerdict(allResults);
   const finishedAt = Date.now();
@@ -498,6 +644,7 @@ export async function runTrial(opts: TrialOptions): Promise<TrialSummary> {
     adapterVersion: opts.adapter.version,
     packVersions,
     adapterTruth: opts.adapter.truth,
+    liveMode,
   };
   await trialStore.saveTrial(summary);
 
@@ -522,8 +669,84 @@ export async function runTrial(opts: TrialOptions): Promise<TrialSummary> {
       .join("; ");
   await trialStore.saveTrial(summary);
 
-  emit({ kind: "trial:end", trialId, summary });
+  emit({
+    phase: "complete",
+    severity: severityForVerdict(verdict),
+    message: `Trial complete: ${verdict.toUpperCase()} · trust ${Math.round(score.trust * 100)}%`,
+    adapter: { id: opts.adapter.id, version: opts.adapter.version },
+    source: "runner",
+    mode: liveMode,
+  });
+  summary.eventCount = timeline.length;
+  await trialStore.saveTrial(summary);
+  await trialStore.saveTrialEvents(trialId, timeline);
   return summary;
+}
+
+function startAdapterEventPump(args: {
+  adapter: AgentAdapter;
+  session: Awaited<ReturnType<AgentAdapter["startSession"]>>;
+  testId: string;
+  packId: string;
+  mode: "live" | "buffered";
+  emit: (ev: AgentEvent) => void;
+}): () => Promise<void> {
+  if (args.mode !== "live" || !args.adapter.streamEvents) {
+    return async () => {};
+  }
+  let closed = false;
+  const pump = (async () => {
+    try {
+      for await (const ev of args.adapter.streamEvents!(args.session)) {
+        if (closed) break;
+        args.emit(ev);
+      }
+    } catch (err) {
+      args.emit({
+        ts: Date.now(),
+        kind: "error",
+        text: `adapter stream failed: ${(err as Error).message}`,
+      });
+    }
+  })();
+  return async () => {
+    closed = true;
+    await Promise.race([
+      pump,
+      new Promise((resolve) => setTimeout(resolve, 100)),
+    ]);
+  };
+}
+
+function agentEventKey(ev: AgentEvent): string {
+  return `${ev.ts}:${ev.kind}:${ev.text ?? ""}`;
+}
+
+function formatAgentEvent(ev: AgentEvent): string {
+  const text = ev.text ? ` — ${ev.text.slice(0, 500)}` : "";
+  return `${ev.kind}${text}`;
+}
+
+function severityForAgentEvent(ev: AgentEvent): TrialEventSeverity {
+  const kind = ev.kind.toLowerCase();
+  if (kind.includes("error") || kind.includes("failed")) return "fail";
+  if (kind.includes("warn")) return "warn";
+  if (kind.includes("final")) return "pass";
+  return "info";
+}
+
+function severityForVerdict(verdict: Verdict): TrialEventSeverity {
+  if (verdict === "pass") return "pass";
+  if (verdict === "warn") return "warn";
+  if (verdict === "fail") return "fail";
+  if (verdict === "error") return "critical";
+  return "info";
+}
+
+function verdictPhase(verdict: Verdict): TrialEvent["phase"] {
+  if (verdict === "pass") return "test_passed";
+  if (verdict === "warn") return "warning";
+  return "test_failed";
 }
 
 async function runAssertion(

@@ -1,9 +1,10 @@
 import { Router } from "express";
 import { getAdapter } from "../../adapters/registry.js";
 import { getPack } from "../../packs/registry.js";
-import { runTrial, type TrialEvent } from "../../runner/trial-runner.js";
+import { runTrial } from "../../runner/trial-runner.js";
 import { TrialStore } from "../../storage/index.js";
 import { COLOSSEUM_VERSION, getGitCommit } from "../../version.js";
+import type { TrialEvent } from "../../types.js";
 
 interface LiveTrial {
   trialId: string;
@@ -17,6 +18,7 @@ export function trialsRouter(stateRoot: string): Router {
   const r = Router();
   const live = new Map<string, LiveTrial>();
   const store = new TrialStore(stateRoot);
+  const maxLiveEvents = 1_000;
 
   r.get("/", async (_req, res) => {
     const trials = await store.listTrials();
@@ -47,6 +49,14 @@ export function trialsRouter(stateRoot: string): Router {
     const trialId = `trial-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const slot: LiveTrial = { trialId, events: [], done: false, clients: new Set() };
     live.set(trialId, slot);
+    const pushLive = (e: TrialEvent) => {
+      slot.events.push(e);
+      if (slot.events.length > maxLiveEvents) {
+        slot.events.splice(0, slot.events.length - maxLiveEvents);
+      }
+      for (const c of slot.clients) c(e);
+      if (e.phase === "complete") slot.done = true;
+    };
 
     runTrial({
       trialId,
@@ -59,49 +69,56 @@ export function trialsRouter(stateRoot: string): Router {
         extra: body.extra,
       },
       onEvent: (e) => {
-        slot.events.push(e);
-        for (const c of slot.clients) c(e);
-        if (e.kind === "trial:end") slot.done = true;
+        pushLive(e);
       },
     }).catch((err) => {
-      slot.events.push({
-        kind: "trial:end",
+      const now = Date.now();
+      pushLive({
+        sequence: slot.events.length + 1,
         trialId,
-        // best-effort placeholder; UI will refetch the saved trial
-        summary: {
-          trialId,
-          agentId: body.agent,
-          adapter: body.agent,
-          packs: body.packs,
-          startedAt: Date.now(),
-          finishedAt: Date.now(),
-          durationMs: 0,
-          verdict: "error",
-          score: {
-            passRate: 0,
-            perCategory: [],
-            costEfficiency: { category: "overall", value: 0, n: 0, reasons: [] },
-            trust: 0,
-            reasons: [`Runner error: ${(err as Error).message}`],
-          },
-          testCount: 0,
-          passCount: 0,
-          failCount: 0,
-          velumDecision: "warn",
-          colosseumVersion: COLOSSEUM_VERSION,
-          gitCommit: getGitCommit(),
-          adapterVersion: "unknown",
-          packVersions: Object.fromEntries(body.packs.map((p) => [p, "unknown"])),
-          adapterTruth: {
-            modelIdentity: "unknown",
-            costTruth: "unknown",
-            eventStructure: "unstructured",
-            toolSupport: false,
-          },
-        },
+        timestamp: now,
+        phase: "complete",
+        severity: "critical",
+        message: `Runner error: ${(err as Error).message}`,
+        adapter: { id: body.agent, version: "unknown" },
+        source: "runner",
+        mode: "buffered",
       });
       slot.done = true;
-      for (const c of slot.clients) c(slot.events[slot.events.length - 1]);
+      void store.saveTrial({
+        trialId,
+        agentId: body.agent,
+        adapter: body.agent,
+        packs: body.packs,
+        startedAt: now,
+        finishedAt: now,
+        durationMs: 0,
+        verdict: "error",
+        score: {
+          passRate: 0,
+          perCategory: [],
+          costEfficiency: { category: "overall", value: 0, n: 0, reasons: [] },
+          trust: 0,
+          reasons: [`Runner error: ${(err as Error).message}`],
+        },
+        testCount: 0,
+        passCount: 0,
+        failCount: 0,
+        velumDecision: "warn",
+        colosseumVersion: COLOSSEUM_VERSION,
+        gitCommit: getGitCommit(),
+        adapterVersion: "unknown",
+        packVersions: Object.fromEntries(body.packs.map((p) => [p, "unknown"])),
+        adapterTruth: {
+          modelIdentity: "unknown",
+          costTruth: "unknown",
+          eventStructure: "unstructured",
+          toolSupport: false,
+        },
+        liveMode: "buffered",
+        eventCount: slot.events.length,
+      });
+      void store.saveTrialEvents(trialId, slot.events);
     });
 
     res.status(202).json({ trialId });
@@ -116,7 +133,7 @@ export function trialsRouter(stateRoot: string): Router {
     res.json(summary);
   });
 
-  r.get("/:id/events", (req, res) => {
+  r.get("/:id/events", async (req, res) => {
     res.set({
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
@@ -125,7 +142,18 @@ export function trialsRouter(stateRoot: string): Router {
     res.flushHeaders();
     const slot = live.get(req.params.id);
     if (!slot) {
-      res.write(`event: end\ndata: {"reason":"trial not active"}\n\n`);
+      const saved = await store.getTrialEvents(req.params.id);
+      if (saved.length === 0) {
+        const summary = await store.getTrial(req.params.id);
+        if (!summary) {
+          res.write(`event: error\ndata: {"error":"no such trial"}\n\n`);
+          res.end();
+          return;
+        }
+      }
+      for (const e of saved) {
+        res.write(`data: ${JSON.stringify({ ...e, mode: "replay" })}\n\n`);
+      }
       res.end();
       return;
     }
@@ -140,7 +168,7 @@ export function trialsRouter(stateRoot: string): Router {
     }
     const onEvent = (e: TrialEvent) => {
       res.write(`data: ${JSON.stringify(e)}\n\n`);
-      if (e.kind === "trial:end") {
+      if (e.phase === "complete") {
         res.write(`event: end\ndata: {}\n\n`);
         res.end();
       }

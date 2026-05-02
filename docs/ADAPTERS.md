@@ -221,12 +221,20 @@ that's the whole point.
 
 ## Streaming status (v0.1)
 
-`AgentAdapter.streamEvents()` exists in the contract but the runner does **not**
-consume it concurrently with `sendPrompt()` in v0.1. What the timeline shows
-during a trial is the buffered event replay produced when `sendPrompt()`
-resolves, not a live feed. Adapters that emit events incrementally are still
-welcome to implement `streamEvents` — when the runner-side pump lands in v0.2,
-those adapters will surface live without changes.
+`AgentAdapter.streamEvents()` is now consumed concurrently with `sendPrompt()`.
+Adapters that implement a real async event source can surface live `thought`,
+`tool_call`, `stdout`, `stderr`, `final`, and `error` events while a test is
+still running. The runner redacts streamed text before it reaches the API/UI.
+
+Adapters that do not provide a live stream still work. Colosseum emits runner
+lifecycle events (`test_started`, `receipt_written`, `scoring`, `complete`) and
+marks the timeline as `buffered` with this operator-facing message:
+
+> This adapter does not provide live step events; showing trial status and receipt timeline.
+
+Do not fake fine-grained steps. If an adapter only has post-hoc events, return
+them in `AgentRunResult.events`; the runner will replay them as buffered events
+without changing scoring.
 
 ## Stamina observability (CLI adapters have limits)
 
@@ -258,9 +266,9 @@ The trust score absorbs them: warn contributes a partial value to the
 category average and is visible as the gap between pass-rate and category
 score (see `docs/SCORING.md`).
 
-If you need live event delivery today, treat `streamEvents` as advisory and use
-the runner's `onEvent` callback (which is invoked once per event after
-`sendPrompt` returns).
+Live delivery is available through the runner's `onEvent` callback and the API
+SSE endpoint `GET /api/trials/:trialId/events`. Completed trials are replayed
+from `colosseum-state/trial-events/<trialId>.json`.
 
 ## Ptah wrapper recipe
 

@@ -56,6 +56,8 @@ export interface Receipt {
   velum: VelumScanResult;
   /** Stream of agent events for replay. Capped. */
   events: AgentEvent[];
+  /** Whether this receipt was produced with concurrent adapter streaming. */
+  streamMode?: "live" | "buffered" | "replay";
   /** Timestamps in ms since epoch. */
   startedAt: number;
   finishedAt: number;
@@ -90,6 +92,7 @@ export function renderReceipt(r: Receipt): string {
     lines.push(`**Cost:** not reported (${r.costInfo.note ?? "n/a"})`);
   }
   lines.push(`**Duration:** ${r.durationMs}ms`);
+  lines.push(`**Timeline mode:** ${r.streamMode ?? "buffered"}`);
   lines.push(``);
   lines.push(`## Prompt`);
   lines.push("```");
@@ -197,6 +200,7 @@ export function receiptFromTest(args: {
   repoDiffSummary?: string;
   repoDiffStatus?: "changed" | "unchanged" | "unavailable";
   repoDiffUnavailableReason?: string;
+  streamMode?: "live" | "buffered" | "replay";
 }): Receipt {
   return {
     receiptId: `${args.trialId}/${args.testId}`,
@@ -228,6 +232,7 @@ export function receiptFromTest(args: {
     repoDiffUnavailableReason: args.repoDiffUnavailableReason,
     velum: args.velum,
     events: args.events.slice(-200),
+    streamMode: args.streamMode ?? "buffered",
     startedAt: args.startedAt,
     finishedAt: args.finishedAt,
     durationMs: args.finishedAt - args.startedAt,

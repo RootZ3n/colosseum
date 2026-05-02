@@ -53,6 +53,8 @@ program
     "success",
   )
   .option("--quiet", "Suppress per-event output")
+  .option("--watch", "Print live trial events as they happen")
+  .option("--live", "Alias for --watch")
   .action(async (raw) => {
     const opts = raw as {
       agent: string;
@@ -62,6 +64,8 @@ program
       state: string;
       cleanup: "always" | "success" | "never";
       quiet?: boolean;
+      watch?: boolean;
+      live?: boolean;
     };
     if (!["always", "success", "never"].includes(opts.cleanup)) {
       console.error(
@@ -81,12 +85,17 @@ program
       baseRunOptions: { model: opts.model, location: opts.location },
       onEvent: (e) => {
         if (opts.quiet) return;
-        if (e.kind === "test:start") {
+        const watching = opts.watch || opts.live;
+        if (watching) {
+          process.stdout.write(
+            `[${new Date(e.timestamp).toLocaleTimeString()}] ${e.severity.toUpperCase()} ${e.phase}` +
+              `${e.testId ? ` ${e.testId}` : ""} — ${e.message}\n`,
+          );
+        } else if (e.phase === "test_started") {
           process.stdout.write(`▷ ${e.testId}\n`);
-        } else if (e.kind === "test:end") {
-          const sym = e.verdict === "pass" ? "✓" : e.verdict === "warn" ? "!" : "✗";
-          process.stdout.write(`${sym} ${e.testId} — ${e.verdict}\n`);
-          for (const r of e.reasons.slice(0, 2)) process.stdout.write(`    ${r}\n`);
+        } else if (e.phase === "test_passed" || e.phase === "test_failed" || e.phase === "warning") {
+          const sym = e.severity === "pass" ? "✓" : e.severity === "warn" ? "!" : "✗";
+          if (e.testId) process.stdout.write(`${sym} ${e.testId} — ${e.message}\n`);
         }
       },
     });
