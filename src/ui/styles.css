@@ -671,6 +671,44 @@ table.scroll tr:hover { background: rgba(214,173,74,0.04); }
   overflow: auto;
 }
 
+.report-panel {
+  margin-bottom: 22px;
+}
+.report-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+}
+.report-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.report-panel summary {
+  margin-top: 12px;
+  cursor: pointer;
+  color: var(--gold-2);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.report-preview {
+  max-height: 360px;
+  margin-top: 10px;
+}
+
+@media (max-width: 760px) {
+  .report-head {
+    flex-direction: column;
+  }
+  .report-actions {
+    justify-content: flex-start;
+  }
+}
+
 /* ----------- Footer ----------- */
 
 .footer {

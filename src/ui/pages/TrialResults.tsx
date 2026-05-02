@@ -4,12 +4,14 @@ import { api, type Receipt, type TrialSummary } from "../api.js";
 import { VerdictPill } from "../components/VerdictPill.js";
 import { ScoreBar } from "../components/ScoreBar.js";
 import { ArenaRails, SectionDivider } from "../components/ArenaRails.js";
+import { buildAgentFixReport, copyText, downloadText } from "../report.js";
 
 export function TrialResults() {
   const { id } = useParams();
   const [trial, setTrial] = useState<TrialSummary | null>(null);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [loading, setLoading] = useState(true);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
 
   useEffect(() => {
     if (!id) return;
@@ -44,6 +46,20 @@ export function TrialResults() {
     skipped: { headline: "Empty", sub: "No tests ran." },
   };
   const head = headlineMap[trial.verdict] ?? headlineMap.warn;
+  const agentReport = buildAgentFixReport(trial, receipts);
+  const actionCount = receipts.filter((r) =>
+    ["fail", "warn", "error"].includes(String(r.verdict)),
+  ).length;
+
+  async function copyReport() {
+    try {
+      await copyText(agentReport);
+      setCopyState("copied");
+      window.setTimeout(() => setCopyState("idle"), 1800);
+    } catch {
+      setCopyState("failed");
+    }
+  }
 
   return (
     <div className="page">
@@ -116,6 +132,35 @@ export function TrialResults() {
           </div>
         </div>
       </section>
+
+      <SectionDivider label="Agent Fix Report" />
+
+      <div className="stone report-panel">
+        <div className="report-head">
+          <div>
+            <h2 style={{ margin: 0 }}>Copy-paste report</h2>
+            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              {actionCount} failing or warning receipt{actionCount === 1 ? "" : "s"} packaged for another agent.
+            </div>
+          </div>
+          <div className="report-actions">
+            <button type="button" className="btn ghost" onClick={copyReport}>
+              {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy report"}
+            </button>
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={() => downloadText(`${trial.trialId}-fix-report.md`, agentReport)}
+            >
+              Download .md
+            </button>
+          </div>
+        </div>
+        <details>
+          <summary>Preview report</summary>
+          <pre className="receipt report-preview">{agentReport}</pre>
+        </details>
+      </div>
 
       <SectionDivider label="Test-by-test verdicts" />
 
